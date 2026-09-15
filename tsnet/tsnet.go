@@ -574,6 +574,18 @@ func (s *Server) Start() error {
 	return s.initErr
 }
 
+// InvalidateNetwork forces the link monitor to treat the network as having
+// changed, waking the wireguard engine the same way a device coming out of
+// sleep would: the injected change carries a synthetic major time jump, so
+// even an unchanged interface set requests a rebind. Embedders use it as a
+// watchdog for connections that died silently while no platform event fired
+// (stale NAT mappings, doze without a link flap).
+func (s *Server) InvalidateNetwork() {
+	if s.netMon != nil {
+		s.netMon.InjectLinkChange()
+	}
+}
+
 // Up connects the server to the tailnet and waits until it is running.
 // On success it returns the current status, including a Tailscale IP address.
 func (s *Server) Up(ctx context.Context) (*ipnstate.Status, error) {

@@ -557,6 +557,23 @@ func (m *Monitor) InjectEvent() {
 	}
 }
 
+// InjectLinkChange is InjectEvent plus a synthetic major time jump, so the
+// resulting ChangeDelta carries RebindLikelyRequired even when the observed
+// interface state did not visibly change. Embedders without a platform event
+// source use it as a watchdog to recover connections that died silently
+// (stale NAT mappings, a device that slept with no link flap).
+func (m *Monitor) InjectLinkChange() {
+	if m.static {
+		return
+	}
+	m.mu.Lock()
+	if m.jumpDuration == 0 {
+		m.jumpDuration = majorTimeJumpThreshold + time.Minute
+	}
+	m.mu.Unlock()
+	m.InjectEvent()
+}
+
 // Poll forces the monitor to pretend there was a network
 // change and re-check the state of the network.
 //
@@ -728,9 +745,17 @@ func (m *Monitor) pollWallTime() {
 // shouldMonitorTimeJump is whether we keep a regular periodic timer running in
 // the background watching for jumps in wall time.
 //
-// We don't do this on mobile platforms for battery reasons, and because these
-// platforms don't really sleep in the same way.
-const shouldMonitorTimeJump = runtime.GOOS != "android" && runtime.GOOS != "ios" && runtime.GOOS != "plan9"
+// Upstream skips mobile platforms because the official apps wake the monitor
+// from their own platform network callbacks (on Android, ConnectivityManager
+// notifications call InjectEvent, see interfaces_android.go), so the timer is
+// not needed and battery is saved.
+//
+// Embedded tsnet has no such callback layer: the Android poll runs every 10
+// minutes and only fires when the interface set actually changed, so a
+// connection that dies silently (NAT rebind after doze, no link flap) never
+// fires anything and never recovers. Keep the timer on Android so a wall-clock
+// jump once the device wakes up injects a link change and reconnects.
+const shouldMonitorTimeJump = runtime.GOOS != "ios" && runtime.GOOS != "plan9"
 
 // checkWallTimeAdvanceLocked reports whether wall time jumped more than 150% of
 // pollWallTimeInterval, indicating we probably just came out of sleep. Once a
