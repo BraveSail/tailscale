@@ -18,7 +18,7 @@ import (
 // adapter owns the lowest-metric default route, this picks the best physical
 // NIC by running the same metric comparison with every virtual interface type
 // excluded (the detection sing-tun uses).
-func underlyingDefaultInterface() (string, error) {
+func underlyingDefaultInterface() (string, string, error) {
 	ifs, err := getInterfaces(windows.AF_INET, winipcfg.GAAFlagIncludeAllInterfaces, func(iface *winipcfg.IPAdapterAddresses) bool {
 		switch iface.IfType {
 		case winipcfg.IfTypeSoftwareLoopback, winipcfg.IfTypePropVirtual:
@@ -27,12 +27,12 @@ func underlyingDefaultInterface() (string, error) {
 		return iface.OperStatus == winipcfg.IfOperStatusUp && iface.Flags&winipcfg.IPAAFlagIpv4Enabled != 0
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	routes, err := winipcfg.GetIPForwardTable2(windows.AF_INET)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	bestMetric := ^uint32(0)
@@ -59,7 +59,7 @@ func underlyingDefaultInterface() (string, error) {
 		}
 	}
 	if bestIface == nil {
-		return "", errors.New("netmon: no underlying default route found")
+		return "", "", errors.New("netmon: no underlying default route found")
 	}
-	return bestIface.FriendlyName(), nil
+	return bestIface.FriendlyName(), "winipcfg-metric", nil
 }

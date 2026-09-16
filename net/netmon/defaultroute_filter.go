@@ -84,28 +84,28 @@ func DefaultRouteInterfaceNameViaSocket() (string, error) {
 }
 
 // defaultRouteInterfaceName returns the name of the interface holding the
-// default route, preferring the platform route reader and falling back to the
-// socket route probe. The probe fallback covers environments where the
-// platform reader is unavailable or never populated (e.g. Android app
-// sandboxes, where the platform reader depends on the embedding app calling
-// UpdateLastKnownDefaultRouteInterface).
-func defaultRouteInterfaceName() (name string, viaProbe bool, err error) {
+// default route and the strategy that resolved it ("platform",
+// "uid-route", "main-table", "rpdb-main-rule" or "socket-probe").
+//
+// Preference order: the platform route reader (accurate on systems whose
+// embedding app keeps it populated), platform-specific underlying-route
+// detection (Android/Windows: finds the physical NIC while a VPN tunnel
+// owns the top-priority rules), then the socket route probe as a last
+// resort — which, while a TUN is up, resolves to the tunnel itself.
+func defaultRouteInterfaceName(logf logger.Logf) (name string, how string, err error) {
 	if ifName, err := DefaultRouteInterface(); err == nil && ifName != "" {
-		return ifName, false, nil
+		return ifName, "platform", nil
 	}
-	// On Android the platform reader is usually unpopulated and a plain
-	// socket probe resolves to the VPN tunnel while a TUN owns the
-	// top-priority rules. Ask the routing policy database for the underlying
-	// (non-VPN) default route first — that names the NIC actually carrying
-	// data. No-op on other platforms.
-	if ifName, err := underlyingDefaultInterface(); err == nil && ifName != "" {
-		return ifName, true, nil
+	if ifName, h, err := underlyingDefaultInterface(); err == nil && ifName != "" {
+		return ifName, h, nil
+	} else if err != nil && logf != nil {
+		logf("netmon: underlying default-interface probe failed: %v", err)
 	}
 	ifName, err := DefaultRouteInterfaceNameViaSocket()
 	if err != nil {
-		return "", true, err
+		return "", "socket-probe", err
 	}
-	return ifName, true, nil
+	return ifName, "socket-probe", nil
 }
 
 // AddressesOnDefaultRouteInterface filters addrs down to those assigned to the
@@ -126,9 +126,9 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 			logf(format, args...)
 		}
 	}
-	ifName, viaProbe, err := defaultRouteInterfaceName()
+	ifName, how, err := defaultRouteInterfaceName(debugf)
 	if err != nil || ifName == "" {
-		debugf("netmon: default-route interface unresolved (probe=%v, err=%v); keeping all %d addresses", viaProbe, err, len(addrs))
+		debugf("netmon: default-route interface unresolved (via=%s, err=%v); keeping all %d addresses", how, err, len(addrs))
 		return addrs
 	}
 	if isTunnelInterface(ifName) {
@@ -139,10 +139,10 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 		// (drop only addresses owned by tunnel interfaces).
 		kept := keepNonTunnelAddrs(addrs)
 		if len(kept) == 0 {
-			debugf("netmon: default-route interface %q is a tunnel (probe=%v) and no physical addresses remain; keeping all %d addresses", ifName, viaProbe, len(addrs))
+			debugf("netmon: default-route interface %q is a tunnel (via=%s) and no physical addresses remain; keeping all %d addresses", ifName, how, len(addrs))
 			return addrs
 		}
-		debugf("netmon: default-route interface %q is a tunnel (probe=%v): kept %d of %d physical addresses", ifName, viaProbe, len(kept), len(addrs))
+		debugf("netmon: default-route interface %q is a tunnel (via=%s): kept %d of %d physical addresses", ifName, how, len(kept), len(addrs))
 		return kept
 	}
 	keep := map[netip.Addr]bool{}
@@ -155,7 +155,7 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 		}
 	})
 	if err != nil || len(keep) == 0 {
-		debugf("netmon: default-route interface %q has no addresses (probe=%v, err=%v); keeping all %d addresses", ifName, viaProbe, err, len(addrs))
+		debugf("netmon: default-route interface %q has no addresses (via=%s, err=%v); keeping all %d addresses", ifName, how, err, len(addrs))
 		return addrs
 	}
 	out := addrs[:0]
@@ -164,7 +164,7 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 			out = append(out, a)
 		}
 	}
-	debugf("netmon: default-route interface %q (probe=%v): kept %d of %d addresses", ifName, viaProbe, len(out), len(addrs))
+	debugf("netmon: default-route interface %q (via=%s): kept %d of %d addresses", ifName, how, len(out), len(addrs))
 	return out
 }
 
