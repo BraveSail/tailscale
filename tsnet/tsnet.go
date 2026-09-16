@@ -250,6 +250,13 @@ type Server struct {
 	// as an Ephemeral node (https://tailscale.com/s/ephemeral-nodes).
 	Ephemeral bool
 
+	// EndpointFilter, if non-empty, restricts which endpoint sources the
+	// underlying magicsock collects and advertises. Empty (the default)
+	// preserves the standard behavior. "nic-ipv6" advertises only the
+	// IPv6 addresses of the local interfaces: STUN-mapped, portmapped,
+	// cloud-provided and static/config endpoints are omitted.
+	EndpointFilter string
+
 	// AuthKey, if non-empty, is the auth key to create the node
 	// and will be preferred over the TS_AUTHKEY environment
 	// variable. If the node is already created (from state
@@ -913,17 +920,18 @@ func (s *Server) start() (reterr error) {
 	s.dialer.LookupHook = s.LookupHook
 	s.dialer.SetBus(sys.Bus.Get())
 	eng, err := wgengine.NewUserspaceEngine(tsLogf, wgengine.Config{
-		Tun:           s.Tun,
-		EventBus:      sys.Bus.Get(),
-		ListenPort:    s.Port,
-		NetMon:        s.netMon,
-		Dialer:        s.dialer,
-		LookupHook:    s.LookupHook,
-		SetSubsystem:  sys.Set,
-		ControlKnobs:  sys.ControlKnobs(),
-		HealthTracker: sys.HealthTracker.Get(),
-		ExtraRootCAs:  sys.ExtraRootCAs,
-		Metrics:       sys.UserMetricsRegistry(),
+		Tun:            s.Tun,
+		EventBus:       sys.Bus.Get(),
+		ListenPort:     s.Port,
+		NetMon:         s.netMon,
+		Dialer:         s.dialer,
+		LookupHook:     s.LookupHook,
+		SetSubsystem:   sys.Set,
+		ControlKnobs:   sys.ControlKnobs(),
+		HealthTracker:  sys.HealthTracker.Get(),
+		ExtraRootCAs:   sys.ExtraRootCAs,
+		Metrics:        sys.UserMetricsRegistry(),
+		EndpointFilter: s.EndpointFilter,
 	})
 	if err != nil {
 		return err

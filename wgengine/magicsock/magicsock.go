@@ -291,6 +291,11 @@ type Conn struct {
 
 	onlyTCP443 atomic.Bool
 
+	// endpointFilter, when non-empty, restricts which endpoint sources
+	// are collected and advertised. Immutable after NewConn; see
+	// Options.EndpointFilter for the meaning of "nic-ipv6".
+	endpointFilter string
+
 	closed  bool        // Close was called
 	closing atomic.Bool // Close is in progress (or done)
 
@@ -526,6 +531,17 @@ type Options struct {
 	// This is primarily useful in tests.
 	DisablePortMapper bool
 
+	// EndpointFilter optionally restricts which endpoint sources are
+	// collected and advertised. Empty (the default) preserves the
+	// historical behavior: STUN-mapped, portmapped, cloud-provided and
+	// local interface addresses are all advertised.
+	//
+	// A value of "nic-ipv6" restricts the advertised set to IPv6
+	// addresses of the local interfaces only: portmapper, STUN/global
+	// mappings, cloud public IPs and static/pretend config endpoints are
+	// all omitted, and IPv4/loopback local addresses are skipped.
+	EndpointFilter string
+
 	// ForceDiscoKey, if non-zero, forces the use of a specific disco
 	// private key. This should only be used for special cases and
 	// experiments, not for production. The recommended normal path is to
@@ -705,7 +721,10 @@ func NewConn(opts Options) (*Conn, error) {
 
 	// Don't log the same log messages possibly every few seconds in our
 	// portmapper.
-	if buildfeatures.HasPortMapper && !opts.DisablePortMapper {
+	// Skip the portmapper entirely under EndpointFilter "nic-ipv6": its
+	// mapped addresses would be advertised (and the filter forbids that),
+	// and keeping it running would only add noise/updates.
+	if buildfeatures.HasPortMapper && !opts.DisablePortMapper && opts.EndpointFilter != "nic-ipv6" {
 		portmapperLogf := logger.WithPrefix(c.logf, "portmapper: ")
 		portmapperLogf = netmon.LinkChangeLogLimiter(c.connCtx, portmapperLogf, opts.NetMon)
 		var disableUPnP func() bool
@@ -730,6 +749,7 @@ func NewConn(opts Options) (*Conn, error) {
 	c.extraRootCAs = opts.ExtraRootCAs
 	c.derpAppName = opts.DERPAppName
 	c.getPeerByKey = opts.PeerByKeyFunc
+	c.endpointFilter = opts.EndpointFilter
 
 	if err := c.rebind(keepCurrentPort); err != nil {
 		return nil, err
@@ -1362,14 +1382,16 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 	}
 
 	v4Addrs, v6Addrs := nr.GetGlobalAddrs()
-	for _, addr := range v4Addrs {
-		addAddr(addr, tailcfg.EndpointSTUN)
-	}
-	for _, addr := range v6Addrs {
-		addAddr(addr, tailcfg.EndpointSTUN)
+	if c.endpointFilter != "nic-ipv6" {
+		for _, addr := range v4Addrs {
+			addAddr(addr, tailcfg.EndpointSTUN)
+		}
+		for _, addr := range v6Addrs {
+			addAddr(addr, tailcfg.EndpointSTUN)
+		}
 	}
 
-	if len(v4Addrs) >= 1 {
+	if c.endpointFilter != "nic-ipv6" && len(v4Addrs) >= 1 {
 		// If they're behind a hard NAT and are using a fixed
 		// port locally, assume they might've added a static
 		// port mapping on their router to the same explicit
@@ -1384,27 +1406,31 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 	// pretend endpoint(s) for testing NAT traversal scenarios.
 	// TODO(bradfitz): probably promote this to the config file.
 	// https://github.com/tailscale/tailscale/issues/12578
-	for _, ap := range pretendpoints() {
-		addAddr(ap, tailcfg.EndpointExplicitConf)
+	if c.endpointFilter != "nic-ipv6" {
+		for _, ap := range pretendpoints() {
+			addAddr(ap, tailcfg.EndpointExplicitConf)
+		}
 	}
 
 	// If we're on a cloud instance, we might have a public IPv4 or IPv6
 	// address that we can be reached at. Find those, if they exist, and
 	// add them.
-	if addrs, err := c.cloudInfo.GetPublicIPs(ctx); err == nil {
-		var port4, port6 uint16
-		if addr := c.pconn4.LocalAddr(); addr != nil {
-			port4 = uint16(addr.Port)
-		}
-		if addr := c.pconn6.LocalAddr(); addr != nil {
-			port6 = uint16(addr.Port)
-		}
+	if c.endpointFilter != "nic-ipv6" {
+		if addrs, err := c.cloudInfo.GetPublicIPs(ctx); err == nil {
+			var port4, port6 uint16
+			if addr := c.pconn4.LocalAddr(); addr != nil {
+				port4 = uint16(addr.Port)
+			}
+			if addr := c.pconn6.LocalAddr(); addr != nil {
+				port6 = uint16(addr.Port)
+			}
 
-		for _, addr := range addrs {
-			if addr.Is4() && port4 > 0 {
-				addAddr(netip.AddrPortFrom(addr, port4), tailcfg.EndpointLocal)
-			} else if addr.Is6() && port6 > 0 {
-				addAddr(netip.AddrPortFrom(addr, port6), tailcfg.EndpointLocal)
+			for _, addr := range addrs {
+				if addr.Is4() && port4 > 0 {
+					addAddr(netip.AddrPortFrom(addr, port4), tailcfg.EndpointLocal)
+				} else if addr.Is6() && port6 > 0 {
+					addAddr(netip.AddrPortFrom(addr, port6), tailcfg.EndpointLocal)
+				}
 			}
 		}
 	}
@@ -1426,7 +1452,9 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 	eps = c.endpointTracker.update(time.Now(), eps)
 
 	c.staticEndpoints.All()(func(_ int, ep netip.AddrPort) bool {
-		addAddr(ep, tailcfg.EndpointExplicitConf)
+		if c.endpointFilter != "nic-ipv6" {
+			addAddr(ep, tailcfg.EndpointExplicitConf)
+		}
 		return true
 	})
 
@@ -1435,7 +1463,19 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 		if err != nil {
 			return nil, err
 		}
-		if len(ips) == 0 && len(eps) == 0 {
+		if c.endpointFilter == "nic-ipv6" {
+			// Keep only globally-routable IPv6 addresses of local
+			// interfaces; skip IPv4, 4-in-6 forms and loopback. The
+			// loopback fallback below is likewise skipped: it is not
+			// a NIC IPv6 address.
+			kept := ips[:0]
+			for _, ip := range ips {
+				if ip.Is6() && !ip.Is4In6() && !ip.IsLoopback() {
+					kept = append(kept, ip)
+				}
+			}
+			ips = kept
+		} else if len(ips) == 0 && len(eps) == 0 {
 			// Only include loopback addresses if we have no
 			// interfaces at all to use as endpoints and don't
 			// have a public IPv4 or IPv6 address. This allows
@@ -1449,7 +1489,10 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 	} else {
 		// Our local endpoint is bound to a particular address.
 		// Do not offer addresses on other local interfaces.
-		addAddr(ipp(localAddr.String()), tailcfg.EndpointLocal)
+		if local := localAddr.AddrPort(); c.endpointFilter != "nic-ipv6" ||
+			(local.Addr().Is6() && !local.Addr().Is4In6() && !local.Addr().IsLoopback()) {
+			addAddr(ipp(localAddr.String()), tailcfg.EndpointLocal)
+		}
 	}
 
 	// Note: the endpoints are intentionally returned in priority order,

@@ -265,6 +265,13 @@ type Config struct {
 	// WireGuard. The pkt slice is borrowed and must be copied if
 	// the callee needs to retain it.
 	OnDERPRecv func(regionID int, src key.NodePublic, pkt []byte) (handled bool)
+
+	// EndpointFilter, if non-empty, restricts which endpoint sources
+	// magicsock collects and advertises. Empty preserves the default
+	// behavior; "nic-ipv6" advertises only the IPv6 addresses of local
+	// interfaces (no STUN/portmapped/cloud/static endpoints). Passed
+	// through to magicsock.
+	EndpointFilter string
 }
 
 // NewFakeUserspaceEngine returns a new userspace engine for testing.
@@ -444,6 +451,7 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		PeerByKeyFunc:  e.PeerByKey,
 		ForceDiscoKey:  conf.ForceDiscoKey,
 		OnDERPRecv:     conf.OnDERPRecv,
+		EndpointFilter: conf.EndpointFilter,
 	}
 	var err error
 	e.magicConn, err = magicsock.NewConn(magicsockOpts)
