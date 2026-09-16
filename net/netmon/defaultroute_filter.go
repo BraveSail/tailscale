@@ -93,6 +93,14 @@ func defaultRouteInterfaceName() (name string, viaProbe bool, err error) {
 	if ifName, err := DefaultRouteInterface(); err == nil && ifName != "" {
 		return ifName, false, nil
 	}
+	// On Android the platform reader is usually unpopulated and a plain
+	// socket probe resolves to the VPN tunnel while a TUN owns the
+	// top-priority rules. Ask the routing policy database for the underlying
+	// (non-VPN) default route first — that names the NIC actually carrying
+	// data. No-op on other platforms.
+	if ifName, err := underlyingDefaultInterface(); err == nil && ifName != "" {
+		return ifName, true, nil
+	}
 	ifName, err := DefaultRouteInterfaceNameViaSocket()
 	if err != nil {
 		return "", true, err
