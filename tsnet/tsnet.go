@@ -2383,6 +2383,18 @@ func (s *Server) Sys() *tsd.System {
 	return s.sys
 }
 
+// InjectNetMonEvent forces the network monitor to announce a synthetic
+// network-change event, making magicsock recompute its endpoint candidates
+// immediately. Host apps that learn about the underlying network through
+// their own channels (e.g. the Android app right after calling
+// netmon.UpdateLastKnownDefaultRouteInterface) use this so endpoint changes
+// take effect without waiting for the next periodic recompute.
+func (s *Server) InjectNetMonEvent() {
+	if s.netMon != nil {
+		s.netMon.InjectEvent()
+	}
+}
+
 type listenKey struct {
 	network string
 	host    netip.Addr // or zero value for unspecified
