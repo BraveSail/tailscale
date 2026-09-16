@@ -7,10 +7,25 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/metacubex/tailscale/types/logger"
 )
+
+// isTunnelInterface reports whether name looks like a userspace tunnel
+// interface (VPN TUN/TAP, WireGuard, PPP). While such an interface is up it
+// owns the system default route, which makes route probes resolve to the
+// tunnel instead of the physical NIC that actually carries traffic.
+func isTunnelInterface(name string) bool {
+	n := strings.ToLower(name)
+	for _, prefix := range []string{"tun", "utun", "tap", "wg", "ppp", "ipsec"} {
+		if strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // probeV6Route is an arbitrary globally-routable IPv6 address used to ask the
 // kernel which interface a default-route packet would leave from. No packet is
@@ -108,6 +123,20 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 		debugf("netmon: default-route interface unresolved (probe=%v, err=%v); keeping all %d addresses", viaProbe, err, len(addrs))
 		return addrs
 	}
+	if isTunnelInterface(ifName) {
+		// A VPN tunnel owns the system default route while it is up, so the
+		// route probe resolves to the tunnel itself — not the NIC actually
+		// carrying data. Filtering by the tunnel would drop every real
+		// address (kept 0), so keep the physical-interface addresses instead
+		// (drop only addresses owned by tunnel interfaces).
+		kept := keepNonTunnelAddrs(addrs)
+		if len(kept) == 0 {
+			debugf("netmon: default-route interface %q is a tunnel (probe=%v) and no physical addresses remain; keeping all %d addresses", ifName, viaProbe, len(addrs))
+			return addrs
+		}
+		debugf("netmon: default-route interface %q is a tunnel (probe=%v): kept %d of %d physical addresses", ifName, viaProbe, len(kept), len(addrs))
+		return kept
+	}
 	keep := map[netip.Addr]bool{}
 	err = ForeachInterface(func(iface Interface, pfxs []netip.Prefix) {
 		if iface.Name != ifName {
@@ -128,5 +157,26 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 		}
 	}
 	debugf("netmon: default-route interface %q (probe=%v): kept %d of %d addresses", ifName, viaProbe, len(out), len(addrs))
+	return out
+}
+
+// keepNonTunnelAddrs drops addresses owned by tunnel interfaces, keeping the
+// addresses of physical NICs.
+func keepNonTunnelAddrs(addrs []netip.Addr) []netip.Addr {
+	tunnelOwned := map[netip.Addr]bool{}
+	_ = ForeachInterface(func(iface Interface, pfxs []netip.Prefix) {
+		if !isTunnelInterface(iface.Name) {
+			return
+		}
+		for _, pfx := range pfxs {
+			tunnelOwned[pfx.Addr().Unmap()] = true
+		}
+	})
+	out := addrs[:0]
+	for _, a := range addrs {
+		if !tunnelOwned[a.Unmap()] {
+			out = append(out, a)
+		}
+	}
 	return out
 }
