@@ -5,10 +5,11 @@ package netmon
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"time"
+
+	"github.com/metacubex/tailscale/types/logger"
 )
 
 // probeV6Route is an arbitrary globally-routable IPv6 address used to ask the
@@ -92,10 +93,19 @@ func defaultRouteInterfaceName() (name string, viaProbe bool, err error) {
 // it cannot be resolved, or none of the given addresses live on it, addrs is
 // returned unchanged: callers degrade to their unfiltered behavior instead of
 // losing all addresses.
-func AddressesOnDefaultRouteInterface(addrs []netip.Addr) []netip.Addr {
+//
+// logf receives the decision trace (nil is allowed and logs nothing); pass the
+// caller's logger so the outcome is visible in the host application's log view
+// rather than the process stderr.
+func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []netip.Addr {
+	debugf := func(format string, args ...any) {
+		if logf != nil {
+			logf(format, args...)
+		}
+	}
 	ifName, viaProbe, err := defaultRouteInterfaceName()
 	if err != nil || ifName == "" {
-		log.Printf("netmon: default-route interface unresolved (probe=%v, err=%v); keeping all %d addresses", viaProbe, err, len(addrs))
+		debugf("netmon: default-route interface unresolved (probe=%v, err=%v); keeping all %d addresses", viaProbe, err, len(addrs))
 		return addrs
 	}
 	keep := map[netip.Addr]bool{}
@@ -108,7 +118,7 @@ func AddressesOnDefaultRouteInterface(addrs []netip.Addr) []netip.Addr {
 		}
 	})
 	if err != nil || len(keep) == 0 {
-		log.Printf("netmon: default-route interface %q has no addresses (probe=%v, err=%v); keeping all %d addresses", ifName, viaProbe, err, len(addrs))
+		debugf("netmon: default-route interface %q has no addresses (probe=%v, err=%v); keeping all %d addresses", ifName, viaProbe, err, len(addrs))
 		return addrs
 	}
 	out := addrs[:0]
@@ -117,6 +127,6 @@ func AddressesOnDefaultRouteInterface(addrs []netip.Addr) []netip.Addr {
 			out = append(out, a)
 		}
 	}
-	log.Printf("netmon: default-route interface %q (probe=%v): kept %d of %d addresses", ifName, viaProbe, len(out), len(addrs))
+	debugf("netmon: default-route interface %q (probe=%v): kept %d of %d addresses", ifName, viaProbe, len(out), len(addrs))
 	return out
 }

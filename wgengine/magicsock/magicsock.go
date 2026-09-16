@@ -1480,7 +1480,7 @@ func (c *Conn) determineEndpoints(ctx context.Context) ([]tailcfg.Endpoint, erro
 			// data), so addresses on inactive SIMs and auxiliary
 			// channels are not advertised. No-op when the
 			// default-route interface cannot be determined.
-			ips = netmon.AddressesOnDefaultRouteInterface(ips)
+			ips = netmon.AddressesOnDefaultRouteInterface(c.logf, ips)
 		} else if len(ips) == 0 && len(eps) == 0 {
 			// Only include loopback addresses if we have no
 			// interfaces at all to use as endpoints and don't
