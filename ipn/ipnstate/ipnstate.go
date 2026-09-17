@@ -266,6 +266,23 @@ type PeerStatus struct {
 	Relay     string // DERP region
 	PeerRelay string // peer relay address (ip:port:vni)
 
+	// DirectVerified reports whether a direct path is currently trusted for
+	// sending (a recent disco round trip), rather than merely known.
+	DirectVerified bool `json:",omitempty"`
+
+	// DerpDataBlocked reports that relayed data is dropped for this peer
+	// because the p2p-only endpoint filter is active and no direct path is
+	// currently verified.
+	DerpDataBlocked bool `json:",omitempty"`
+
+	// DerpDataDropped and DerpDataDroppedRx count outbound and inbound data
+	// packets dropped instead of being relayed.
+	DerpDataDropped   int64 `json:",omitempty"`
+	DerpDataDroppedRx int64 `json:",omitempty"`
+
+	// DirectDataSent counts data packets sent over a direct path.
+	DirectDataSent int64 `json:",omitempty"`
+
 	RxBytes        int64
 	TxBytes        int64
 	Created        time.Time // time registered with tailcontrol
@@ -518,6 +535,21 @@ func (sb *StatusBuilder) AddPeer(peer key.NodePublic, st *PeerStatus) {
 	}
 	if v := st.CurAddr; v != "" {
 		e.CurAddr = v
+	}
+	if st.DirectVerified {
+		e.DirectVerified = true
+	}
+	if st.DerpDataBlocked {
+		e.DerpDataBlocked = true
+	}
+	if v := st.DerpDataDropped; v != 0 {
+		e.DerpDataDropped = v
+	}
+	if v := st.DerpDataDroppedRx; v != 0 {
+		e.DerpDataDroppedRx = v
+	}
+	if v := st.DirectDataSent; v != 0 {
+		e.DirectDataSent = v
 	}
 	if v := st.RxBytes; v != 0 {
 		e.RxBytes = v

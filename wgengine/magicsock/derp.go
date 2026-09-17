@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -763,6 +764,14 @@ func (c *Conn) processDERPReadResult(dm derpReadResult, b []byte) (n int, ep *en
 	if !ok {
 		// We don't know anything about this node key, nothing to
 		// record or process.
+		return 0, nil
+	}
+
+	if c.derpDataDisabled {
+		// p2p-only: relayed data is dropped instead of handed to WireGuard
+		// (disco signaling above still flows), so the peer stays reachable
+		// only while a direct path is verified.
+		atomic.AddInt64(&ep.derpDataDroppedRx, 1)
 		return 0, nil
 	}
 

@@ -296,6 +296,11 @@ type Conn struct {
 	// Options.EndpointFilter for the meaning of "nic-ipv6".
 	endpointFilter string
 
+	// derpDataDisabled, set from the "nic-ipv6-p2p" endpoint filter, keeps
+	// DERP for signaling only: data that would be relayed is dropped, so a
+	// peer is reachable only over a direct path.
+	derpDataDisabled bool
+
 	closed  bool        // Close was called
 	closing atomic.Bool // Close is in progress (or done)
 
@@ -540,6 +545,11 @@ type Options struct {
 	// addresses of the local interfaces only: portmapper, STUN/global
 	// mappings, cloud public IPs and static/pretend config endpoints are
 	// all omitted, and IPv4/loopback local addresses are skipped.
+	//
+	// "nic-ipv6-p2p" is "nic-ipv6" plus a hard rule that DERP never
+	// carries data. Disco/CallMeMaybe signaling still flows over DERP so
+	// peers keep exchanging their current addresses, but a peer with no
+	// direct path is unreachable instead of relayed.
 	EndpointFilter string
 
 	// ForceDiscoKey, if non-zero, forces the use of a specific disco
@@ -724,7 +734,8 @@ func NewConn(opts Options) (*Conn, error) {
 	// Skip the portmapper entirely under EndpointFilter "nic-ipv6": its
 	// mapped addresses would be advertised (and the filter forbids that),
 	// and keeping it running would only add noise/updates.
-	if buildfeatures.HasPortMapper && !opts.DisablePortMapper && opts.EndpointFilter != "nic-ipv6" {
+	if buildfeatures.HasPortMapper && !opts.DisablePortMapper &&
+		opts.EndpointFilter != "nic-ipv6" && opts.EndpointFilter != "nic-ipv6-p2p" {
 		portmapperLogf := logger.WithPrefix(c.logf, "portmapper: ")
 		portmapperLogf = netmon.LinkChangeLogLimiter(c.connCtx, portmapperLogf, opts.NetMon)
 		var disableUPnP func() bool
@@ -750,6 +761,12 @@ func NewConn(opts Options) (*Conn, error) {
 	c.derpAppName = opts.DERPAppName
 	c.getPeerByKey = opts.PeerByKeyFunc
 	c.endpointFilter = opts.EndpointFilter
+	c.derpDataDisabled = opts.EndpointFilter == "nic-ipv6-p2p"
+	if c.derpDataDisabled {
+		// The p2p filter keeps the endpoint-collection rules of "nic-ipv6"
+		// and only adds the DERP data rule in sendAddr.
+		c.endpointFilter = "nic-ipv6"
+	}
 
 	if err := c.rebind(keepCurrentPort); err != nil {
 		return nil, err
@@ -1744,6 +1761,9 @@ func (c *Conn) sendUDPStd(addr netip.AddrPort, b []byte) (sent bool, err error) 
 func (c *Conn) sendAddr(addr netip.AddrPort, pubKey key.NodePublic, b []byte, isDisco bool, isGeneveEncap bool) (sent bool, err error) {
 	if addr.Addr() != tailcfg.DerpMagicIPAddr {
 		return c.sendUDP(addr, b, isDisco, isGeneveEncap)
+	}
+	if c.derpDataDisabled && !isDisco {
+		return false, nil
 	}
 
 	regionID := int(addr.Port())

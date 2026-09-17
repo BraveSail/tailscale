@@ -65,6 +65,9 @@ type endpoint struct {
 	lastRecvWG            mono.Time // last time there were incoming packets from this peer destined for wireguard-go (e.g. not disco)
 	lastRecvUDPAny        mono.Time // last time there were incoming UDP packets from this peer of any kind
 	numStopAndResetAtomic int64
+	directDataSent        int64 // data packets sent over a direct path
+	derpDataDropped       int64 // data packets dropped instead of relayed (p2p-only filter)
+	derpDataDroppedRx     int64 // relayed data packets dropped on receive (p2p-only filter)
 	debugUpdates          *ringlog.RingLog[EndpointChange]
 
 	// These fields are initialized once and never modified.
@@ -1123,26 +1126,35 @@ func (de *endpoint) send(buffs [][]byte, offset int) error {
 		if update := de.c.connCounter.Load(); err == nil && update != nil {
 			update(0, netip.AddrPortFrom(de.nodeAddr, 0), udpAddr.ap, len(buffs), txBytes, false)
 		}
+		if err == nil {
+			atomic.AddInt64(&de.directDataSent, int64(len(buffs)))
+		}
 	}
 	if derpAddr.IsValid() {
-		allOk := true
-		var txBytes int
-		for _, buff := range buffs {
-			buff = buff[offset:]
-			const isDisco = false
-			const isGeneveEncap = false
-			ok, _ := de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco, isGeneveEncap)
-			txBytes += len(buff)
-			if !ok {
-				allOk = false
+		if de.c.derpDataDisabled {
+			// p2p-only: relayed data is dropped instead of sent, so the peer
+			// stays reachable only while a direct path is verified.
+			atomic.AddInt64(&de.derpDataDropped, int64(len(buffs)))
+		} else {
+			allOk := true
+			var txBytes int
+			for _, buff := range buffs {
+				buff = buff[offset:]
+				const isDisco = false
+				const isGeneveEncap = false
+				ok, _ := de.c.sendAddr(derpAddr, de.publicKey, buff, isDisco, isGeneveEncap)
+				txBytes += len(buff)
+				if !ok {
+					allOk = false
+				}
 			}
-		}
 
-		if update := de.c.connCounter.Load(); update != nil {
-			update(0, netip.AddrPortFrom(de.nodeAddr, 0), derpAddr, len(buffs), txBytes, false)
-		}
-		if allOk {
-			return nil
+			if update := de.c.connCounter.Load(); update != nil {
+				update(0, netip.AddrPortFrom(de.nodeAddr, 0), derpAddr, len(buffs), txBytes, false)
+			}
+			if allOk {
+				return nil
+			}
 		}
 	}
 	return err
@@ -2060,16 +2072,24 @@ func (de *endpoint) populatePeerStatus(ps *ipnstate.PeerStatus) {
 	defer de.mu.Unlock()
 
 	ps.Relay = de.c.derpRegionCodeOfIDLocked(int(de.derpAddr.Port()))
+	ps.DirectDataSent = atomic.LoadInt64(&de.directDataSent)
+	ps.DerpDataDropped = atomic.LoadInt64(&de.derpDataDropped)
+	ps.DerpDataDroppedRx = atomic.LoadInt64(&de.derpDataDroppedRx)
+
+	now := mono.Now()
+	udpAddr, derpAddr, _ := de.addrForSendLocked(now)
+	directTrusted := udpAddr.ap.IsValid() && !derpAddr.IsValid()
+	ps.DirectVerified = directTrusted
+	ps.DerpDataBlocked = de.c.derpDataDisabled && !directTrusted
 
 	if de.lastSendExt.IsZero() {
 		return
 	}
 
-	now := mono.Now()
 	ps.LastWrite = de.lastSendExt.WallTime()
 	ps.Active = now.Sub(de.lastSendExt) < sessionActiveTimeout
 
-	if udpAddr, derpAddr, _ := de.addrForSendLocked(now); udpAddr.ap.IsValid() && !derpAddr.IsValid() {
+	if directTrusted {
 		if udpAddr.vni.IsSet() {
 			ps.PeerRelay = udpAddr.String()
 		} else {

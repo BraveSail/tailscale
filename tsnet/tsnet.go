@@ -255,6 +255,9 @@ type Server struct {
 	// preserves the standard behavior. "nic-ipv6" advertises only the
 	// IPv6 addresses of the local interfaces: STUN-mapped, portmapped,
 	// cloud-provided and static/config endpoints are omitted.
+	// "nic-ipv6-p2p" does the same and additionally keeps DERP for address
+	// exchange and disco signaling only: data never travels over DERP, so
+	// a peer without a direct path is treated as unreachable.
 	EndpointFilter string
 
 	// AuthKey, if non-empty, is the auth key to create the node
