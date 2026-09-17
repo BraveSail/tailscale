@@ -92,9 +92,18 @@ func DefaultRouteInterfaceNameViaSocket() (string, error) {
 // detection (Android/Windows: finds the physical NIC while a VPN tunnel
 // owns the top-priority rules), then the socket route probe as a last
 // resort — which, while a TUN is up, resolves to the tunnel itself.
+//
+// A platform result naming a virtual adapter is rejected: on Windows the
+// OS default-route lookup returns the VPN's own TUN (a wintun adapter is
+// named after the application, so a name check alone cannot spot it).
 func defaultRouteInterfaceName(logf logger.Logf) (name string, how string, err error) {
 	if ifName, err := DefaultRouteInterface(); err == nil && ifName != "" {
-		return ifName, "platform", nil
+		if !isVirtualInterfaceName(ifName) {
+			return ifName, "platform", nil
+		}
+		if logf != nil {
+			logf("netmon: platform default-route interface %q is virtual; probing for the physical NIC", ifName)
+		}
 	}
 	if ifName, h, err := underlyingDefaultInterface(); err == nil && ifName != "" {
 		return ifName, h, nil
@@ -131,15 +140,15 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 		debugf("netmon: default-route interface unresolved (via=%s, err=%v); keeping all %d addresses", how, err, len(addrs))
 		return addrs
 	}
-	if isTunnelInterface(ifName) {
+	if isVirtualInterfaceName(ifName) {
 		// A VPN tunnel owns the system default route while it is up, so the
 		// route probe resolves to the tunnel itself — not the NIC actually
 		// carrying data. Filtering by the tunnel would drop every real
 		// address (kept 0), so keep the physical-interface addresses instead
-		// (drop only addresses owned by tunnel interfaces).
-		kept := keepNonTunnelAddrs(addrs)
+		// (drop only addresses owned by virtual interfaces).
+		kept := keepPhysicalAddrs(addrs)
 		if len(kept) == 0 {
-			debugf("netmon: default-route interface %q is a tunnel (via=%s) and no physical addresses remain; keeping all %d addresses", ifName, how, len(addrs))
+			debugf("netmon: default-route interface %q is virtual (via=%s) and no physical addresses remain; keeping all %d addresses", ifName, how, len(addrs))
 			return addrs
 		}
 		debugf("netmon: default-route interface %q is a tunnel (via=%s): kept %d of %d physical addresses", ifName, how, len(kept), len(addrs))
@@ -168,21 +177,21 @@ func AddressesOnDefaultRouteInterface(logf logger.Logf, addrs []netip.Addr) []ne
 	return out
 }
 
-// keepNonTunnelAddrs drops addresses owned by tunnel interfaces, keeping the
+// keepPhysicalAddrs drops addresses owned by virtual interfaces, keeping the
 // addresses of physical NICs.
-func keepNonTunnelAddrs(addrs []netip.Addr) []netip.Addr {
-	tunnelOwned := map[netip.Addr]bool{}
+func keepPhysicalAddrs(addrs []netip.Addr) []netip.Addr {
+	virtualOwned := map[netip.Addr]bool{}
 	_ = ForeachInterface(func(iface Interface, pfxs []netip.Prefix) {
-		if !isTunnelInterface(iface.Name) {
+		if !isVirtualInterfaceName(iface.Name) {
 			return
 		}
 		for _, pfx := range pfxs {
-			tunnelOwned[pfx.Addr().Unmap()] = true
+			virtualOwned[pfx.Addr().Unmap()] = true
 		}
 	})
 	out := addrs[:0]
 	for _, a := range addrs {
-		if !tunnelOwned[a.Unmap()] {
+		if !virtualOwned[a.Unmap()] {
 			out = append(out, a)
 		}
 	}
